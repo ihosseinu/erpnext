@@ -59,7 +59,7 @@ class Budget(Document):
 		account_list = []
 		for d in self.get("accounts"):
 			if d.account:
-				account_details = frappe.db.get_value(
+				account_details = frappe.get_cached_value(
 					"Account", d.account, ["is_group", "company", "report_type"], as_dict=1
 				)
 
@@ -107,7 +107,7 @@ class Budget(Document):
 		self.naming_series = f"{{{frappe.scrub(self.budget_against)}}}./.{self.fiscal_year}/.###"
 
 
-def validate_expense_against_budget(args):
+def validate_expense_against_budget(args, expense_amount=0):
 	args = frappe._dict(args)
 
 	if args.get("company") and not args.fiscal_year:
@@ -175,14 +175,19 @@ def validate_expense_against_budget(args):
 			)  # nosec
 
 			if budget_records:
-				validate_budget_records(args, budget_records)
+				validate_budget_records(args, budget_records, expense_amount)
 
 
-def validate_budget_records(args, budget_records):
+def validate_budget_records(args, budget_records, expense_amount):
 	for budget in budget_records:
 		if flt(budget.budget_amount):
-			amount = get_amount(args, budget)
+			amount = expense_amount or get_amount(args, budget)
 			yearly_action, monthly_action = get_actions(args, budget)
+
+			if yearly_action in ("Stop", "Warn"):
+				compare_expense_with_budget(
+					args, flt(budget.budget_amount), _("Annual"), yearly_action, budget.budget_against, amount
+				)
 
 			if monthly_action in ["Stop", "Warn"]:
 				budget_amount = get_accumulated_monthly_budget(
@@ -195,28 +200,28 @@ def validate_budget_records(args, budget_records):
 					args, budget_amount, _("Accumulated Monthly"), monthly_action, budget.budget_against, amount
 				)
 
-			if (
-				yearly_action in ("Stop", "Warn")
-				and monthly_action != "Stop"
-				and yearly_action != monthly_action
-			):
-				compare_expense_with_budget(
-					args, flt(budget.budget_amount), _("Annual"), yearly_action, budget.budget_against, amount
-				)
-
 
 def compare_expense_with_budget(args, budget_amount, action_for, action, budget_against, amount=0):
-	actual_expense = amount or get_actual_expense(args)
-	if actual_expense > budget_amount:
-		diff = actual_expense - budget_amount
+	actual_expense = get_actual_expense(args)
+	total_expense = actual_expense + amount
+
+	if total_expense > budget_amount:
+		if actual_expense > budget_amount:
+			error_tense = _("is already")
+			diff = actual_expense - budget_amount
+		else:
+			error_tense = _("will be")
+			diff = total_expense - budget_amount
+
 		currency = frappe.get_cached_value("Company", args.company, "default_currency")
 
-		msg = _("{0} Budget for Account {1} against {2} {3} is {4}. It will exceed by {5}").format(
+		msg = _("{0} Budget for Account {1} against {2} {3} is {4}. It {5} exceed by {6}").format(
 			_(action_for),
 			frappe.bold(args.account),
-			args.budget_against_field,
+			frappe.unscrub(args.budget_against_field),
 			frappe.bold(budget_against),
 			frappe.bold(fmt_money(budget_amount, currency=currency)),
+			error_tense,
 			frappe.bold(fmt_money(diff, currency=currency)),
 		)
 
@@ -227,9 +232,9 @@ def compare_expense_with_budget(args, budget_amount, action_for, action, budget_
 			action = "Warn"
 
 		if action == "Stop":
-			frappe.throw(msg, BudgetError)
+			frappe.throw(msg, BudgetError, title=_("Budget Exceeded"))
 		else:
-			frappe.msgprint(msg, indicator="orange")
+			frappe.msgprint(msg, indicator="orange", title=_("Budget Exceeded"))
 
 
 def get_actions(args, budget):
@@ -306,7 +311,7 @@ def get_other_condition(args, budget, for_doc):
 
 	if args.get("fiscal_year"):
 		date_field = "schedule_date" if for_doc == "Material Request" else "transaction_date"
-		start_date, end_date = frappe.db.get_value(
+		start_date, end_date = frappe.get_cached_value(
 			"Fiscal Year", args.get("fiscal_year"), ["year_start_date", "year_end_date"]
 		)
 
@@ -351,7 +356,9 @@ def get_actual_expense(args):
 			"""
 		select sum(gle.debit) - sum(gle.credit)
 		from `tabGL Entry` gle
-		where gle.account=%(account)s
+		where
+			is_cancelled = 0
+			and gle.account=%(account)s
 			{condition1}
 			and gle.fiscal_year=%(fiscal_year)s
 			and gle.company=%(company)s
@@ -379,7 +386,7 @@ def get_accumulated_monthly_budget(monthly_distribution, posting_date, fiscal_ye
 		):
 			distribution.setdefault(d.month, d.percentage_allocation)
 
-	dt = frappe.db.get_value("Fiscal Year", fiscal_year, "year_start_date")
+	dt = frappe.get_cached_value("Fiscal Year", fiscal_year, "year_start_date")
 	accumulated_percentage = 0.0
 
 	while dt <= getdate(posting_date):

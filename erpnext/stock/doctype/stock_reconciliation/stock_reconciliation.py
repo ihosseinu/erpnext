@@ -4,7 +4,7 @@
 from typing import Optional
 
 import frappe
-from frappe import _, msgprint
+from frappe import _, bold, msgprint
 from frappe.utils import cint, cstr, flt
 
 import erpnext
@@ -89,7 +89,7 @@ class StockReconciliation(StockController):
 
 				if item_dict.get("serial_nos"):
 					item.current_serial_no = item_dict.get("serial_nos")
-					if self.purpose == "Stock Reconciliation" and not item.serial_no:
+					if self.purpose == "Stock Reconciliation" and not item.serial_no and item.qty:
 						item.serial_no = item.current_serial_no
 
 				item.current_qty = item_dict.get("qty")
@@ -139,6 +139,14 @@ class StockReconciliation(StockController):
 				item_warehouse_combinations.append(key)
 
 			self.validate_item(row.item_code, row)
+
+			if row.serial_no and not row.qty:
+				self.validation_messages.append(
+					_get_msg(
+						row_num,
+						f"Quantity should not be zero for the {bold(row.item_code)} since serial nos are specified",
+					)
+				)
 
 			# validate warehouse
 			if not frappe.db.get_value("Warehouse", row.warehouse):
@@ -230,7 +238,7 @@ class StockReconciliation(StockController):
 
 			if item.has_serial_no or item.has_batch_no:
 				has_serial_no = True
-				self.get_sle_for_serialized_items(row, sl_entries)
+				self.get_sle_for_serialized_items(row, sl_entries, item)
 			else:
 				if row.serial_no or row.batch_no:
 					frappe.throw(
@@ -282,7 +290,7 @@ class StockReconciliation(StockController):
 		if has_serial_no and sl_entries:
 			self.update_valuation_rate_for_serial_no()
 
-	def get_sle_for_serialized_items(self, row, sl_entries):
+	def get_sle_for_serialized_items(self, row, sl_entries, item):
 		from erpnext.stock.stock_ledger import get_previous_sle
 
 		serial_nos = get_serial_nos(row.serial_no)
@@ -348,6 +356,9 @@ class StockReconciliation(StockController):
 		if row.qty:
 			args = self.get_sle_for_items(row)
 
+			if item.has_serial_no and item.has_batch_no:
+				args["qty_after_transaction"] = row.qty
+
 			args.update(
 				{
 					"actual_qty": row.qty,
@@ -394,6 +405,7 @@ class StockReconciliation(StockController):
 				"voucher_type": self.doctype,
 				"voucher_no": self.name,
 				"voucher_detail_no": row.name,
+				"actual_qty": 0,
 				"company": self.company,
 				"stock_uom": frappe.db.get_value("Item", row.item_code, "stock_uom"),
 				"is_cancelled": 1 if self.docstatus == 2 else 0,
@@ -419,6 +431,8 @@ class StockReconciliation(StockController):
 				data.qty_after_transaction = 0.0
 				data.valuation_rate = flt(row.valuation_rate)
 				data.stock_value_difference = -1 * flt(row.amount_difference)
+
+		self.update_inventory_dimensions(row, data)
 
 		return data
 
@@ -712,8 +726,8 @@ def get_itemwise_batch(warehouse, posting_date, company, item_code=None):
 def get_stock_balance_for(
 	item_code: str,
 	warehouse: str,
-	posting_date: str,
-	posting_time: str,
+	posting_date,
+	posting_time,
 	batch_no: Optional[str] = None,
 	with_valuation_rate: bool = True,
 ):
