@@ -515,7 +515,6 @@ class AccountsController(TransactionBase):
 				parent_dict.update({"customer": parent_dict.get("party_name")})
 
 			self.pricing_rules = []
-			basic_item_details_map = {}
 
 			for item in self.get("items"):
 				if item.get("item_code"):
@@ -535,17 +534,7 @@ class AccountsController(TransactionBase):
 					if self.get("is_subcontracted"):
 						args["is_subcontracted"] = self.is_subcontracted
 
-					basic_details = basic_item_details_map.get(item.item_code)
-					ret, basic_item_details = get_item_details(
-						args,
-						self,
-						for_validate=True,
-						overwrite_warehouse=False,
-						return_basic_details=True,
-						basic_details=basic_details,
-					)
-
-					basic_item_details_map.setdefault(item.item_code, basic_item_details)
+					ret = get_item_details(args, self, for_validate=True, overwrite_warehouse=False)
 
 					for fieldname, value in ret.items():
 						if item.meta.get_field(fieldname) and value is not None:
@@ -845,7 +834,9 @@ class AccountsController(TransactionBase):
 	def set_advances(self):
 		"""Returns list of advances against Account, Party, Reference"""
 
-		res = self.get_advance_entries()
+		res = self.get_advance_entries(
+			include_unallocated=not cint(self.get("only_include_allocated_payments"))
+		)
 
 		self.set("advances", [])
 		advance_allocated = 0
