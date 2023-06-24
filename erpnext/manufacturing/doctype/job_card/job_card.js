@@ -12,6 +12,28 @@ frappe.ui.form.on('Job Card', {
 			};
 		});
 
+		frm.set_query("serial_and_batch_bundle", () => {
+			return {
+				filters: {
+					'item_code': frm.doc.production_item,
+					'voucher_type': frm.doc.doctype,
+					'voucher_no': ["in", [frm.doc.name, ""]],
+					'is_cancelled': 0,
+				}
+			}
+		});
+
+		let sbb_field = frm.get_docfield('serial_and_batch_bundle');
+		if (sbb_field) {
+			sbb_field.get_route_options_for_new_doc = () => {
+				return {
+					'item_code': frm.doc.production_item,
+					'warehouse': frm.doc.wip_warehouse,
+					'voucher_type': frm.doc.doctype,
+				}
+			};
+		}
+
 		frm.set_indicator_formatter('sub_operation',
 			function(doc) {
 				if (doc.status == "Pending") {
